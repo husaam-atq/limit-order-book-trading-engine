@@ -9,8 +9,6 @@
 
 Event-driven limit order book and execution simulator implementing price-time priority matching, market replay, TWAP/VWAP/POV execution algorithms, slippage analytics, transaction cost analysis, strategy backtesting, validation checks, performance benchmarks, and a polished Streamlit dashboard.
 
-Repository: [https://github.com/husaam-atq/limit-order-book-trading-engine](https://github.com/husaam-atq/limit-order-book-trading-engine)
-
 ## What This Project Demonstrates
 
 - Deterministic price-time priority matching with market, limit, cancel, and cancel/replace request handling.
@@ -230,41 +228,7 @@ Performance results show that the pure-Python implementation can process sizeabl
 - Add optional Numba acceleration for replay and analytics hot paths while retaining a pure-Python path.
 - Add richer transaction cost calibration from empirical spreads and volatility.
 
-## CV Bullet Examples
 
-General:
-
-> Built an event-driven limit order book and execution simulator implementing price-time priority, market/limit/cancel order handling, partial fills, market replay, TWAP/VWAP/POV execution algorithms, transaction cost analytics and performance benchmarking, validated through deterministic matching-engine tests and reproducible replay simulations.
-
-Quant Developer:
-
-> Developed a modular Python matching engine with FIFO price-level queues, deterministic replay, validation benchmarks, pytest coverage, and performance reports across up to 100,000 synthetic events.
-
-Quant Analyst:
-
-> Implemented market microstructure analytics including spread, depth, imbalance, weighted midpoint, rolling volatility, order-flow imbalance, slippage, implementation shortfall, and execution quality summaries.
-
-Execution Trading:
-
-> Built execution algorithm simulations for TWAP, VWAP, POV, and implementation shortfall with parent/child order tracking, fill summaries, participation metrics, and transaction cost estimates.
-
-Market Microstructure:
-
-> Created a reproducible limit order book research framework covering price-time priority, queue-level liquidity, partial fills, spread dynamics, order-flow imbalance, and deterministic market replay.
-
-Trading Infrastructure:
-
-> Designed a tested event-driven trading systems package with order lifecycle management, matching-engine state, replayable event streams, dashboard analytics, CI configuration, and benchmark reporting.
-
-## Interview Talking Points
-
-- How price-time priority is enforced at both price and FIFO queue levels.
-- Why market-order remainders are cancelled while crossing-limit remainders can rest.
-- How deterministic replay avoids lookahead by processing one event at a time.
-- Trade-offs between simple dictionary-backed price levels and lower-latency sorted structures.
-- How slippage, spread cost, market impact, and commission combine into execution quality.
-- Why synthetic data is useful for validation but limited for strategy claims.
-
-## For Recruiters And Interviewers
+## Purpose
 
 This repository is intended to show practical trading systems engineering: clean models, deterministic matching rules, reproducible validation, testing discipline, execution analytics, benchmark reporting, and a dashboard suitable for explaining the system visually.
