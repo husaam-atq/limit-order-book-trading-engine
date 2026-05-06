@@ -13,6 +13,7 @@ from lob_engine.core.matching_engine import MatchingEngine
 from lob_engine.core.orders import CancelRequest, Order, OrderStatus, OrderType, Side
 from lob_engine.execution import ImplementationShortfallExecutor, ParentOrder, POVExecutor, TWAPExecutor, VWAPExecutor
 from lob_engine.simulation.backtester import EventDrivenBacktester
+from lob_engine.simulation.fast_replay import FastMarketReplay, prepare_fast_events
 from lob_engine.simulation.market_generator import (
     SyntheticMarketConfig,
     generate_market_events,
@@ -21,7 +22,12 @@ from lob_engine.simulation.market_generator import (
 from lob_engine.simulation.market_replay import MarketReplay
 from lob_engine.strategies.mean_reversion import MeanReversionStrategy
 from lob_engine.utils.io import project_root
-from lob_engine.utils.performance import benchmark_event_throughput, write_performance_report
+from lob_engine.utils.performance import (
+    benchmark_event_throughput,
+    benchmark_target_status,
+    generate_profile_report,
+    write_performance_report,
+)
 
 
 def run_validation_suite(include_performance: bool = True) -> pd.DataFrame:
@@ -36,6 +42,8 @@ def run_validation_suite(include_performance: bool = True) -> pd.DataFrame:
         _check_cancel_order,
         _check_book_metrics,
         _check_replay_determinism,
+        _check_fast_engine_parity,
+        _check_fast_replay_determinism,
         _check_execution_algorithms,
         _check_transaction_cost_analytics,
         _check_backtester_sanity,
@@ -47,7 +55,9 @@ def run_validation_suite(include_performance: bool = True) -> pd.DataFrame:
     if include_performance:
         try:
             benchmark = benchmark_event_throughput(event_counts=(1_000,), seed=42)
-            throughput = benchmark["events_per_second"].iloc[0]
+            throughput = benchmark[
+                (benchmark["implementation_path"] == "optimised") & (benchmark["benchmark_mode"] == "core_matching")
+            ]["events_per_second"].iloc[0]
             rows.append(
                 {
                     "check": "Performance benchmark",
@@ -62,7 +72,7 @@ def run_validation_suite(include_performance: bool = True) -> pd.DataFrame:
 
 def generate_validation_report(
     output_dir: str | Path | None = None,
-    benchmark_event_counts: tuple[int, ...] = (1_000, 10_000, 100_000),
+    benchmark_event_counts: tuple[int, ...] = (1_000, 10_000, 100_000, 500_000, 1_000_000),
 ) -> dict[str, Path | pd.DataFrame]:
     """Generate validation, benchmark, execution, sample-data, and performance artifacts."""
 
@@ -79,10 +89,18 @@ def generate_validation_report(
     schedule.to_csv(data_dir / "sample_execution_schedule.csv", index=False)
 
     validation = run_validation_suite(include_performance=True)
+    previous_baseline = _read_previous_baseline(out / "benchmark_results.csv")
     benchmark = benchmark_event_throughput(
         event_counts=benchmark_event_counts, seed=42, output_path=out / "benchmark_results.csv"
     )
-    write_performance_report(benchmark, out / "performance_report.md")
+    profile_path = generate_profile_report(out / "profile_report.md", event_count=10_000, seed=42)
+    profile_summary = "- Full profiling details are available in `reports/profile_report.md`."
+    write_performance_report(
+        benchmark,
+        out / "performance_report.md",
+        profile_summary=profile_summary,
+        previous_baseline_events_per_second=previous_baseline,
+    )
     report_path = out / "validation_report.md"
     _write_validation_markdown(validation, benchmark, sample_events, report_path)
     return {
@@ -91,6 +109,7 @@ def generate_validation_report(
         "validation_report": report_path,
         "benchmark_results": out / "benchmark_results.csv",
         "performance_report": out / "performance_report.md",
+        "profile_report": profile_path,
         "execution_results": out / "execution_results.csv",
     }
 
@@ -112,6 +131,14 @@ def _write_validation_markdown(
         _markdown_table(validation),
         "",
         "## Benchmark Summary",
+        "",
+        _markdown_table(_benchmark_summary_table(benchmark)),
+        "",
+        "## Benchmark Targets",
+        "",
+        _markdown_table(pd.DataFrame([benchmark_target_status(benchmark)])),
+        "",
+        "## Full Benchmark Results",
         "",
         _markdown_table(benchmark),
         "",
@@ -149,6 +176,52 @@ def _markdown_table(frame: pd.DataFrame) -> str:
                 values.append(str(value))
         lines.append("| " + " | ".join(values) + " |")
     return "\n".join(lines)
+
+
+def _read_previous_baseline(path: Path) -> float | None:
+    """Read a previous 100k reference baseline if a benchmark file already exists."""
+
+    if not path.exists():
+        return None
+    try:
+        previous = pd.read_csv(path)
+        if "implementation_path" in previous:
+            row = previous[
+                (previous["implementation_path"] == "reference")
+                & (previous["benchmark_mode"] == "core_matching")
+                & (previous["event_count"] == 100_000)
+            ]
+        else:
+            row = previous[previous["event_count"] == 100_000]
+        if row.empty:
+            return None
+        return float(row["events_per_second"].iloc[0])
+    except Exception:
+        return None
+
+
+def _benchmark_summary_table(benchmark: pd.DataFrame) -> pd.DataFrame:
+    """Return compact reference vs optimised summary at 100k events."""
+
+    rows = []
+    for mode in ("core_matching", "replay_minimal", "full_system", "analytics"):
+        mode_rows = benchmark[(benchmark["benchmark_mode"] == mode) & (benchmark["event_count"] == 100_000)]
+        ref = mode_rows[mode_rows["implementation_path"] == "reference"]
+        opt = mode_rows[mode_rows["implementation_path"] == "optimised"]
+        if ref.empty and opt.empty:
+            continue
+        ref_eps = None if ref.empty else float(ref["events_per_second"].iloc[0])
+        opt_eps = None if opt.empty else float(opt["events_per_second"].iloc[0])
+        rows.append(
+            {
+                "benchmark_mode": mode,
+                "events": 100_000,
+                "reference_events_per_second": ref_eps,
+                "optimised_events_per_second": opt_eps,
+                "improvement_multiple": None if ref_eps in (None, 0) or opt_eps is None else opt_eps / ref_eps,
+            }
+        )
+    return pd.DataFrame(rows)
 
 
 def _check_price_time_priority() -> tuple[str, bool, str]:
@@ -251,6 +324,76 @@ def _check_replay_determinism() -> tuple[str, bool, str]:
     if not replay_one.trades.empty:
         assert_frame_equal(replay_one.trades[trade_cols], replay_two.trades[trade_cols], check_dtype=False)
     return "Replay determinism", True, f"Replay produced {len(replay_one.trades)} identical trades across two runs."
+
+
+def _check_fast_engine_parity() -> tuple[str, bool, str]:
+    events = generate_market_events(SyntheticMarketConfig(num_events=1_000, seed=7))
+    reference = MarketReplay().replay(events)
+    fast = FastMarketReplay(record_trades=True).replay(prepare_fast_events(events), snapshots=True)
+
+    trade_cols = ["trade_id", "timestamp", "aggressor_order_id", "passive_order_id", "side", "price", "quantity"]
+    assert_frame_equal(
+        reference.trades[trade_cols].reset_index(drop=True),
+        fast.trades[trade_cols].reset_index(drop=True),
+        check_dtype=False,
+        atol=1e-12,
+        rtol=1e-12,
+    )
+    final_reference = _reference_live_orders(reference.final_book)
+    final_fast = _fast_live_orders(fast.final_book)
+    assert_frame_equal(final_reference, final_fast, check_dtype=False, atol=1e-12, rtol=1e-12)
+    passed = (
+        reference.final_book.best_bid() == fast.final_book.best_bid()
+        and reference.final_book.best_ask() == fast.final_book.best_ask()
+        and len(reference.final_book) == len(fast.final_book)
+    )
+    return (
+        "Reference vs optimised parity",
+        passed,
+        f"Matched {len(fast.trades)} trades and {len(fast.final_book)} live orders.",
+    )
+
+
+def _check_fast_replay_determinism() -> tuple[str, bool, str]:
+    events = generate_market_events(SyntheticMarketConfig(num_events=1_000, seed=23))
+    prepared = prepare_fast_events(events)
+    first = FastMarketReplay(record_trades=True).replay(prepared, snapshots=True)
+    second = FastMarketReplay(record_trades=True).replay(prepared, snapshots=True)
+    trade_cols = ["trade_id", "timestamp", "aggressor_order_id", "passive_order_id", "side", "price", "quantity"]
+    assert_frame_equal(first.trades[trade_cols], second.trades[trade_cols], check_dtype=False)
+    assert_frame_equal(first.snapshots, second.snapshots, check_dtype=False)
+    return "Optimised replay determinism", True, f"Fast replay produced {len(first.trades)} identical trades."
+
+
+def _reference_live_orders(book) -> pd.DataFrame:
+    rows = []
+    for order in book.iter_orders():
+        rows.append(
+            {
+                "order_id": order.order_id,
+                "side": order.side.value,
+                "price": order.price,
+                "remaining_quantity": order.remaining_quantity,
+                "status": order.status.value,
+            }
+        )
+    return pd.DataFrame(rows).sort_values("order_id").reset_index(drop=True)
+
+
+def _fast_live_orders(book) -> pd.DataFrame:
+    rows = []
+    for order_id, order in book.order_lookup.items():
+        status = "new" if order.filled_quantity == 0 else "partially_filled"
+        rows.append(
+            {
+                "order_id": order_id,
+                "side": "buy" if order.side == 1 else "sell",
+                "price": order.price_ticks * book.tick_size,
+                "remaining_quantity": order.remaining,
+                "status": status,
+            }
+        )
+    return pd.DataFrame(rows).sort_values("order_id").reset_index(drop=True)
 
 
 def _check_execution_algorithms() -> tuple[str, bool, str]:

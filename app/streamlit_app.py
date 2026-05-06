@@ -343,26 +343,95 @@ def strategy_page() -> None:
 
 
 def performance_page() -> None:
-    section_header("Performance Benchmarks", "Event throughput, processing latency, and memory footprint")
+    section_header(
+        "Performance Benchmarks",
+        "Reference vs optimised throughput, latency distribution, memory scaling, and profile findings",
+    )
     report_path = ROOT / "reports" / "benchmark_results.csv"
     if report_path.exists():
         results = pd.read_csv(report_path)
     else:
         results = benchmark_event_throughput(event_counts=(1_000, 5_000), seed=42)
-    latest = results.iloc[-1]
+    if "benchmark_mode" not in results:
+        results = results.assign(benchmark_mode="core_matching", implementation_path="reference")
+
+    modes = sorted(results["benchmark_mode"].dropna().unique())
+    event_counts = sorted(results["event_count"].dropna().unique())
+    selected_mode = st.sidebar.selectbox(
+        "Benchmark mode", modes, index=0 if "core_matching" not in modes else modes.index("core_matching")
+    )
+    selected_event_count = st.sidebar.selectbox("Benchmark events", event_counts, index=len(event_counts) - 1)
+    filtered = results[(results["benchmark_mode"] == selected_mode) & (results["event_count"] == selected_event_count)]
+    if filtered.empty:
+        filtered = results[results["benchmark_mode"] == selected_mode]
+    best = filtered.sort_values("events_per_second", ascending=False).iloc[0]
+    core_100k = results[
+        (results["benchmark_mode"] == "core_matching")
+        & (results["implementation_path"] == "optimised")
+        & (results["event_count"] == 100_000)
+    ]
+    headline = best if core_100k.empty else core_100k.iloc[0]
     cols = st.columns(4)
     with cols[0]:
-        metric_card("Events/sec", f"{latest['events_per_second']:,.0f}", "current benchmark")
+        metric_card("Optimised Core", f"{headline['events_per_second']:,.0f}", "events/sec at 100k if available")
     with cols[1]:
-        metric_card("p95 latency", f"{latest['p95_latency_us']:.2f} us", "per event")
+        metric_card("p95 latency", f"{headline['p95_latency_us']:.2f} us", "core benchmark")
     with cols[2]:
-        metric_card("Peak memory", f"{latest['peak_memory_mb']:.2f} MB", "tracemalloc")
+        metric_card("Peak memory", f"{headline['peak_memory_mb']:.2f} MB", "separate tracemalloc run")
     with cols[3]:
-        metric_card("Trades", f"{latest['trades']:,.0f}", "matched")
-    st.plotly_chart(
-        dark_bar(results, "event_count", "events_per_second", "event_count", "Throughput by Event Count"),
-        use_container_width=True,
+        metric_card("Largest run", f"{int(max(event_counts)):,}", "synthetic events")
+
+    comparison = results[results["benchmark_mode"] == selected_mode].copy()
+    fig = px.bar(
+        comparison,
+        x="event_count",
+        y="events_per_second",
+        color="implementation_path",
+        barmode="group",
+        color_discrete_map={"reference": "#8ea4c8", "optimised": "#4dd7fa"},
+        title=f"Throughput by Event Count: {selected_mode}",
     )
+    st.plotly_chart(apply_dark_layout(fig), use_container_width=True)
+
+    latency_cols = ["p50_latency_us", "p95_latency_us", "p99_latency_us"]
+    latency = filtered.melt(
+        id_vars=["implementation_path"],
+        value_vars=[column for column in latency_cols if column in filtered],
+        var_name="latency_percentile",
+        value_name="microseconds",
+    )
+    cols = st.columns(2)
+    with cols[0]:
+        fig_latency = px.bar(
+            latency,
+            x="latency_percentile",
+            y="microseconds",
+            color="implementation_path",
+            barmode="group",
+            title=f"Latency Percentiles: {selected_mode} / {int(selected_event_count):,}",
+            color_discrete_map={"reference": "#8ea4c8", "optimised": "#19c37d"},
+        )
+        st.plotly_chart(apply_dark_layout(fig_latency), use_container_width=True)
+    with cols[1]:
+        fig_memory = px.line(
+            comparison,
+            x="event_count",
+            y="peak_memory_mb",
+            color="implementation_path",
+            markers=True,
+            title=f"Peak Memory Scaling: {selected_mode}",
+            color_discrete_map={"reference": "#8ea4c8", "optimised": "#f6c35b"},
+        )
+        st.plotly_chart(apply_dark_layout(fig_memory), use_container_width=True)
+
+    profile_path = ROOT / "reports" / "profile_report.md"
+    if profile_path.exists():
+        profile_text = profile_path.read_text(encoding="utf-8")
+        marker = "## Bottleneck Findings"
+        summary = profile_text.split(marker, 1)[1].split("##", 1)[0].strip() if marker in profile_text else ""
+        if summary:
+            st.markdown("#### Bottleneck Summary")
+            st.markdown(summary)
     st.dataframe(results, use_container_width=True, hide_index=True)
 
 

@@ -1,5 +1,3 @@
-*work in progress*
-
 # Limit Order Book Trading Engine
 
 [![Python](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/)
@@ -21,7 +19,8 @@ Event-driven limit order book and execution simulator implementing price-time pr
 - Execution algorithms for large parent orders: TWAP, VWAP, POV, and implementation shortfall.
 - Transaction cost analytics covering arrival-price slippage, benchmark slippage, spread cost, impact, commission, and total cost in basis points.
 - Event-driven strategy backtesting with inventory, cash, P&L, drawdown, turnover, fill-rate, and transaction-cost accounting.
-- Performance benchmarking across 1,000, 10,000, and 100,000 synthetic events.
+- A readable reference implementation plus a faster optimised benchmark path.
+- Benchmark modes that separate core matching, replay, full-system, and analytics workloads up to 1,000,000 synthetic events.
 
 ## Why It Matters For Quant Trading
 
@@ -29,7 +28,7 @@ Market microstructure and execution systems sit close to the trading venue: orde
 
 ## Headline Validation Results
 
-Latest validation run: **12/12 deterministic checks passed**.
+Latest validation run: **14/14 deterministic checks passed**.
 
 | Area | Result |
 | --- | --- |
@@ -41,6 +40,8 @@ Latest validation run: **12/12 deterministic checks passed**.
 | Cancel handling | Passed |
 | Book metrics | Passed |
 | Replay determinism | Passed |
+| Reference vs optimised parity | Passed |
+| Optimised replay determinism | Passed |
 | Execution algorithms | Passed |
 | Transaction cost analytics | Passed |
 | Backtester sanity checks | Passed |
@@ -50,15 +51,18 @@ Full report: [reports/validation_report.md](reports/validation_report.md)
 
 ## Performance Benchmark Summary
 
-Benchmarks use deterministic synthetic events and measure matching-engine event processing on the current machine. Results depend on hardware, Python version, operating system, and load.
+Benchmarks use deterministic synthetic events and were measured on local hardware. Results depend on hardware, Python version, operating system, and machine load. The readable reference implementation remains available; the optimised path is benchmarked separately so matching throughput is not mixed with dashboard, snapshot, or reporting overhead.
 
-| Events | Runtime (s) | Events/sec | Avg latency (us) | p95 latency (us) | Peak memory (MB) |
-| ---: | ---: | ---: | ---: | ---: | ---: |
-| 1,000 | 0.091 | 11,022 | 16.24 | 36.71 | 0.64 |
-| 10,000 | 0.843 | 11,869 | 15.89 | 37.00 | 6.13 |
-| 100,000 | 8.696 | 11,500 | 17.04 | 39.70 | 60.92 |
+| Benchmark mode | Events | Reference events/sec | Optimised events/sec | Improvement | p95 latency (us) | Peak memory (MB) |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Core matching | 100,000 | 164,745 | 721,152 | 4.38x | 2.70 | 2.59 |
+| Replay minimal | 100,000 | 95,781 | 641,741 | 6.70x | 1.56 | 5.99 |
+| Full system | 100,000 | n/a | 50,814 | n/a | 19.68 | 142.53 |
+| Core matching | 1,000,000 | n/a | 692,787 | n/a | 2.90 | 22.79 |
 
-Full results: [reports/benchmark_results.csv](reports/benchmark_results.csv) and [reports/performance_report.md](reports/performance_report.md)
+Previous committed 100,000-event full-loop baseline was approximately 11,500 events/sec. The optimised 100,000-event core matching benchmark processed 721,152 events/sec, a 62.7x improvement over that baseline and a 4.4x improvement over the current readable reference core benchmark while preserving deterministic price-time priority and replay parity.
+
+Full results: [reports/benchmark_results.csv](reports/benchmark_results.csv), [reports/performance_report.md](reports/performance_report.md), and [reports/profile_report.md](reports/profile_report.md)
 
 ## Dashboard Screenshots
 
@@ -88,12 +92,12 @@ If these images are absent after a clean checkout, see [docs/images/README.md](d
 
 ```text
 src/lob_engine/
-├── core/          # orders, events, book, matching engine, deterministic clock
-├── analytics/     # microstructure, liquidity, slippage, transaction costs
-├── execution/     # TWAP, VWAP, POV, implementation shortfall
-├── simulation/    # synthetic generator, replay, fill simulator, backtester
-├── strategies/    # market making, mean reversion, momentum examples
-└── utils/         # validation, performance, plotting, I/O
+|-- core/          # orders, events, reference book/engine, fast book/engine
+|-- analytics/     # microstructure, liquidity, slippage, transaction costs
+|-- execution/     # TWAP, VWAP, POV, implementation shortfall
+|-- simulation/    # synthetic generator, replay, fast replay, fill simulator, backtester
+|-- strategies/    # market making, mean reversion, momentum examples
+`-- utils/         # validation, performance, profiling, plotting, I/O
 ```
 
 ## Module Map
@@ -103,12 +107,16 @@ src/lob_engine/
 | `lob_engine.core.orders` | Validated order, cancel, and modify/replace request models |
 | `lob_engine.core.order_book` | Bid/ask books, FIFO levels, snapshots, depth, cancellation |
 | `lob_engine.core.matching_engine` | Price-time priority matching and trade records |
+| `lob_engine.core.fast_order_book` | Tick-normalised optimised book with heap-cached best prices and lazy cancellation |
+| `lob_engine.core.fast_matching_engine` | Lightweight integer-code matching path for performance benchmarks |
 | `lob_engine.simulation.market_generator` | Reproducible synthetic market events |
 | `lob_engine.simulation.market_replay` | Sequential event replay without lookahead |
+| `lob_engine.simulation.fast_replay` | Prepared-record replay path for core and minimal replay benchmarks |
 | `lob_engine.execution` | Parent-order slicing and execution summaries |
 | `lob_engine.analytics` | Microstructure, slippage, and transaction cost metrics |
 | `lob_engine.simulation.backtester` | Strategy loop with cash, inventory, P&L, and fills |
-| `lob_engine.utils.validation` | Deterministic validation report generation |
+| `lob_engine.utils.validation` | Deterministic validation, parity checks, and report generation |
+| `lob_engine.utils.performance` | Reference/optimised benchmark modes and profiling workflow |
 | `app/streamlit_app.py` | Dashboard and visual analytics interface |
 
 ## Installation
@@ -117,10 +125,18 @@ src/lob_engine/
 git clone https://github.com/husaam-atq/limit-order-book-trading-engine.git
 cd limit-order-book-trading-engine
 python -m venv .venv
-source .venv/bin/activate  # Windows: .venv\\Scripts\\activate
+source .venv/bin/activate  # Windows: .venv\Scripts\activate
 python -m pip install --upgrade pip
 python -m pip install -e ".[dev]"
 ```
+
+Optional acceleration dependencies can be installed with:
+
+```bash
+python -m pip install -e ".[dev,accel]"
+```
+
+The package works without optional acceleration dependencies.
 
 ## Run Tests
 
@@ -131,7 +147,7 @@ python -m ruff check .
 python -m black --check .
 ```
 
-## Run Validation And Benchmarks
+## Run Validation, Profiling, And Benchmarks
 
 ```bash
 python examples/generate_validation_report.py
@@ -142,6 +158,7 @@ This writes:
 - [reports/validation_report.md](reports/validation_report.md)
 - [reports/benchmark_results.csv](reports/benchmark_results.csv)
 - [reports/performance_report.md](reports/performance_report.md)
+- [reports/profile_report.md](reports/profile_report.md)
 - [reports/execution_results.csv](reports/execution_results.csv)
 - [data/sample_market_events.csv](data/sample_market_events.csv)
 - [data/sample_execution_schedule.csv](data/sample_execution_schedule.csv)
@@ -211,7 +228,7 @@ python -m jupyter nbconvert --to notebook --execute notebooks/04_market_replay_a
 
 The validation suite targets deterministic matching-engine correctness and reproducible replay behaviour. The synthetic strategy examples are included to demonstrate infrastructure, accounting, and analytics workflows. They do not imply live profitability and should not be interpreted as alpha research.
 
-Performance results show that the pure-Python implementation can process sizeable synthetic event streams on a modern workstation. The code favours clarity, deterministic validation, and modular design over exchange-grade low-latency engineering.
+Performance results show that a clear reference implementation and a faster Python path can coexist. The optimised path improves core benchmark throughput by removing pandas from the hot loop, avoiding per-event snapshots, caching best prices, using tick-normalised integer prices, and reducing order allocation overhead. The code favours clarity, deterministic validation, and modular design over exchange-grade low-latency engineering.
 
 ## Limitations
 
@@ -219,18 +236,55 @@ Performance results show that the pure-Python implementation can process sizeabl
 - Queue position, hidden liquidity, auctions, order amendments, self-trade prevention, and exchange-specific edge cases are simplified.
 - The backtesting layer is intentionally compact and designed for infrastructure demonstration.
 - Benchmark results are machine-specific and should be regenerated on the target environment.
+- The optimised benchmark path is designed for reproducible synthetic workloads and does not include venue connectivity, persistence, risk checks, or exchange-specific edge cases.
 - Strategies are simple examples and not trading recommendations.
 
 ## Future Improvements
 
-- Add sorted price maps or tree-backed price levels for larger book sizes.
+- Add tree-backed price levels or a compiled extension for larger books and heavier cancellation loads.
 - Add exchange-specific order types, tick-size tables, and session calendars.
 - Add historical data adapters for public LOBSTER-style or exchange sample datasets.
 - Extend fill models with queue position and adverse selection.
-- Add optional Numba acceleration for replay and analytics hot paths while retaining a pure-Python path.
+- Expand optional acceleration for analytics hot paths while retaining the pure-Python path.
 - Add richer transaction cost calibration from empirical spreads and volatility.
 
 
-## Purpose
+## CV Bullet Examples
+
+General:
+
+> Built an event-driven limit order book and execution simulator implementing price-time priority, market/limit/cancel order handling, partial fills, market replay, TWAP/VWAP/POV execution algorithms, transaction cost analytics and performance benchmarking, validated through deterministic matching-engine tests and reproducible replay simulations.
+
+Quant Developer:
+
+> Developed a modular Python matching engine with FIFO price-level queues, deterministic replay, reference/optimised benchmark paths, pytest coverage, and performance reports across up to 1,000,000 synthetic events.
+
+Quant Analyst:
+
+> Implemented market microstructure analytics including spread, depth, imbalance, weighted midpoint, rolling volatility, order-flow imbalance, slippage, implementation shortfall, and execution quality summaries.
+
+Execution Trading:
+
+> Built execution algorithm simulations for TWAP, VWAP, POV, and implementation shortfall with parent/child order tracking, fill summaries, participation metrics, and transaction cost estimates.
+
+Market Microstructure:
+
+> Created a reproducible limit order book research framework covering price-time priority, queue-level liquidity, partial fills, spread dynamics, order-flow imbalance, and deterministic market replay.
+
+Trading Infrastructure:
+
+> Designed a tested event-driven trading systems package with order lifecycle management, matching-engine state, replayable event streams, dashboard analytics, CI configuration, and benchmark reporting.
+
+## Interview Talking Points
+
+- How price-time priority is enforced at both price and FIFO queue levels.
+- Why market-order remainders are cancelled while crossing-limit remainders can rest.
+- How deterministic replay avoids lookahead by processing one event at a time.
+- Trade-offs between simple dictionary-backed price levels and lower-latency optimised structures.
+- Why core matching, replay, analytics, and dashboard/reporting benchmarks are measured separately.
+- How slippage, spread cost, market impact, and commission combine into execution quality.
+- Why synthetic data is useful for validation but limited for strategy claims.
+
+## For Recruiters And Interviewers
 
 This repository is intended to show practical trading systems engineering: clean models, deterministic matching rules, reproducible validation, testing discipline, execution analytics, benchmark reporting, and a dashboard suitable for explaining the system visually.

@@ -27,6 +27,9 @@ dev = [
     "ruff>=0.4",
     "black>=24.0",
 ]
+accel = [
+    "numba>=0.59",
+]
 
 [tool.setuptools.packages.find]
 where = ["src"]

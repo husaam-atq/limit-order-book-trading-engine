@@ -38,5 +38,17 @@ The synthetic market generator creates reproducible event streams with clustered
 
 ## Performance Benchmark Methodology
 
-Benchmarks measure synthetic event processing through the matching engine. Runtime, throughput, latency percentiles, trade count, resting order count, and peak memory are recorded. Results depend on hardware, Python version, operating system, and current machine load.
+Benchmarks measure synthetic event processing through both the readable reference implementation and the optimised benchmark path. Runtime, throughput, latency percentiles, trade count, resting order count, and peak memory are recorded. Results depend on hardware, Python version, operating system, and current machine load.
 
+Benchmark modes are separated deliberately:
+
+- Core matching measures direct order book and matching-engine processing with prepared events and no snapshots.
+- Replay minimal measures sequential replay without per-event analytics snapshots.
+- Full system includes replay, trade capture, snapshots, and report-oriented DataFrame outputs.
+- Analytics measures post-replay metric calculation separately.
+
+The optimised path uses tick-normalised integer prices, integer-coded event fields, heap-cached best bid/ask prices, lazy cancellation cleanup, and lightweight slotted records. It is validated against the reference engine with deterministic parity tests before benchmark results are reported.
+
+## Profiling Methodology
+
+The profiling workflow uses timed components plus cProfile/pstats to separate matching work from report generation overhead. It profiles order creation, order book add/cancel, matching-engine processing, market replay, snapshot generation, analytics calculation, and the optimised core loop. The profile report highlights repeated sorting/scanning, object allocation, pandas row access, and per-event snapshot generation as distinct bottleneck categories.
